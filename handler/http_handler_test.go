@@ -3,10 +3,11 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"html/template"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -18,8 +19,11 @@ import (
 
 // MockURLService is a mock implementation of the URL service for testing
 type MockURLService struct {
-	urls map[string]*model.URL
-	id   int64
+	urls      map[string]*model.URL
+	id        int64
+	listErr   error
+	deleteErr error
+	getErr    error
 }
 
 // NewMockURLService creates a new mock URL service
@@ -30,19 +34,17 @@ func NewMockURLService() *MockURLService {
 	}
 }
 
-// ShortenURL creates a shortened URL
 func (m *MockURLService) ShortenURL(longURL, customCode string) (*model.URL, error) {
 	shortCode := customCode
 	if shortCode == "" {
 		shortCode = "generated"
 	}
 
-	// Check if the custom code is already in use
 	if _, exists := m.urls[shortCode]; exists && customCode != "" {
-		return nil, fmt.Errorf("custom code '%s' is already in use", customCode)
+		return nil, &model.ErrCustomCodeAlreadyExists{Code: customCode}
 	}
 
-	url := &model.URL{
+	u := &model.URL{
 		ID:        m.id,
 		ShortCode: shortCode,
 		LongURL:   longURL,
@@ -50,45 +52,49 @@ func (m *MockURLService) ShortenURL(longURL, customCode string) (*model.URL, err
 		Clicks:    0,
 	}
 	m.id++
-	m.urls[shortCode] = url
-	return url, nil
+	m.urls[shortCode] = u
+	return u, nil
 }
 
-// GetURL retrieves a URL by its short code
 func (m *MockURLService) GetURL(shortCode string) (*model.URL, error) {
-	url, exists := m.urls[shortCode]
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
+	u, exists := m.urls[shortCode]
 	if !exists {
 		return nil, nil
 	}
-	return url, nil
+	return u, nil
 }
 
-// RecordClick records a click for a URL
 func (m *MockURLService) RecordClick(shortCode string) error {
-	url, exists := m.urls[shortCode]
+	u, exists := m.urls[shortCode]
 	if !exists {
-		return fmt.Errorf("URL with code '%s' not found", shortCode)
+		return &model.ErrURLNotFound{Code: shortCode}
 	}
-	url.Clicks++
+	u.Clicks++
 	return nil
 }
 
-// ListURLs returns all URLs
 func (m *MockURLService) ListURLs() ([]*model.URL, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
 	urls := make([]*model.URL, 0, len(m.urls))
-	for _, url := range m.urls {
-		urls = append(urls, url)
+	for _, u := range m.urls {
+		urls = append(urls, u)
 	}
 	return urls, nil
 }
 
-// DeleteURL deletes a URL
 func (m *MockURLService) DeleteURL(shortCode string) error {
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
 	delete(m.urls, shortCode)
 	return nil
 }
 
-// GenerateQRCode generates a QR code for a URL
 func (m *MockURLService) GenerateQRCode(shortURL string) ([]byte, error) {
 	return []byte("mock-qr-code"), nil
 }
@@ -96,161 +102,428 @@ func (m *MockURLService) GenerateQRCode(shortURL string) ([]byte, error) {
 // Ensure MockURLService implements service.URLService interface
 var _ service.URLServiceInterface = (*MockURLService)(nil)
 
+const mockTemplateText = `
+{{ define "base.html" }}ok{{ end }}
+{{ define "error-content" }}error: {{ .error }}{{ end }}
+`
+
 func setupTestHandler(t *testing.T) (*HTTPHandler, *MockURLService) {
+	t.Helper()
 	mockService := NewMockURLService()
 
-	// Create a mock template
-	tmpl, err := template.New("base").Parse(`{{ define "content" }}{{ end }}{{ define "list" }}{{ end }}{{ define "result" }}{{ end }}`)
+	tmpl, err := template.New("main").Funcs(template.FuncMap{
+		"formatTime": func(t time.Time) string { return t.Format("2006-01-02") },
+		"truncate":   func(s string, n int) string { return s },
+	}).Parse(mockTemplateText)
 	if err != nil {
 		t.Fatalf("Failed to create mock template: %v", err)
 	}
 
-	// Create handler directly without loading templates from disk
-	handler := &HTTPHandler{
+	h := &HTTPHandler{
 		urlService: mockService,
 		baseURL:    "http://localhost:8080",
 		templates:  tmpl,
 	}
 
-	return handler, mockService
+	return h, mockService
+}
+
+func withYear(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), currentYearKey, "2024"))
+}
+
+func withChiParam(r *http.Request, key, value string) *http.Request {
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add(key, value)
+	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
 }
 
 func TestIndexHandler(t *testing.T) {
-	t.Skip("Skipping test that requires template rendering")
+	h, _ := setupTestHandler(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = withYear(req)
+	w := httptest.NewRecorder()
+
+	h.indexHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected %d, got %d", http.StatusOK, w.Code)
+	}
+}
+
+func TestListURLsHandler(t *testing.T) {
+	t.Run("Success", func(t *testing.T) {
+		h, svc := setupTestHandler(t)
+		svc.ShortenURL("https://example.com", "test1")
+		svc.ShortenURL("https://example.org", "test2")
+
+		req := httptest.NewRequest(http.MethodGet, "/urls", nil)
+		req = withYear(req)
+		w := httptest.NewRecorder()
+
+		h.listURLsHandler(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("Expected %d, got %d", http.StatusOK, w.Code)
+		}
+	})
+
+	t.Run("ServiceError", func(t *testing.T) {
+		h, svc := setupTestHandler(t)
+		svc.listErr = errors.New("db down")
+
+		req := httptest.NewRequest(http.MethodGet, "/urls", nil)
+		req = withYear(req)
+		w := httptest.NewRecorder()
+
+		h.listURLsHandler(w, req)
+
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("Expected %d, got %d", http.StatusInternalServerError, w.Code)
+		}
+	})
 }
 
 func TestShortenURLHandler(t *testing.T) {
-	t.Skip("Skipping test that requires template rendering")
+	t.Run("ValidURL", func(t *testing.T) {
+		h, _ := setupTestHandler(t)
+
+		form := url.Values{}
+		form.Set("url", "https://example.com")
+		form.Set("custom_code", "mycode")
+		req := httptest.NewRequest(http.MethodPost, "/shorten", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req = withYear(req)
+		w := httptest.NewRecorder()
+
+		h.shortenURLHandler(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("Expected %d, got %d", http.StatusOK, w.Code)
+		}
+	})
+
+	t.Run("MissingURL", func(t *testing.T) {
+		h, _ := setupTestHandler(t)
+
+		form := url.Values{}
+		req := httptest.NewRequest(http.MethodPost, "/shorten", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req = withYear(req)
+		w := httptest.NewRecorder()
+
+		h.shortenURLHandler(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("Expected %d, got %d", http.StatusBadRequest, w.Code)
+		}
+	})
+
+	t.Run("DuplicateCustomCode", func(t *testing.T) {
+		h, svc := setupTestHandler(t)
+		svc.ShortenURL("https://example.com", "taken")
+
+		form := url.Values{}
+		form.Set("url", "https://other.com")
+		form.Set("custom_code", "taken")
+		req := httptest.NewRequest(http.MethodPost, "/shorten", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req = withYear(req)
+		w := httptest.NewRecorder()
+
+		h.shortenURLHandler(w, req)
+
+		if w.Code != http.StatusConflict {
+			t.Errorf("Expected %d, got %d", http.StatusConflict, w.Code)
+		}
+	})
+}
+
+func TestDeleteURLHandler(t *testing.T) {
+	t.Run("ExistingCode", func(t *testing.T) {
+		h, svc := setupTestHandler(t)
+		svc.ShortenURL("https://example.com", "todelete")
+
+		req := httptest.NewRequest(http.MethodGet, "/delete/todelete", nil)
+		req = withChiParam(req, "code", "todelete")
+		w := httptest.NewRecorder()
+
+		h.deleteURLHandler(w, req)
+
+		if w.Code != http.StatusFound {
+			t.Errorf("Expected %d, got %d", http.StatusFound, w.Code)
+		}
+		if loc := w.Header().Get("Location"); loc != "/urls" {
+			t.Errorf("Expected redirect to '/urls', got '%s'", loc)
+		}
+	})
+
+	t.Run("ServiceError", func(t *testing.T) {
+		h, svc := setupTestHandler(t)
+		svc.deleteErr = errors.New("db error")
+
+		req := httptest.NewRequest(http.MethodGet, "/delete/x", nil)
+		req = withChiParam(withYear(req), "code", "x")
+		w := httptest.NewRecorder()
+
+		h.deleteURLHandler(w, req)
+
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("Expected %d, got %d", http.StatusInternalServerError, w.Code)
+		}
+	})
 }
 
 func TestRedirectHandler(t *testing.T) {
-	handler, service := setupTestHandler(t)
+	t.Run("ExistingCode", func(t *testing.T) {
+		h, svc := setupTestHandler(t)
+		svc.ShortenURL("https://example.com", "test")
 
-	// Create a URL
-	url, err := service.ShortenURL("https://example.com", "test")
-	if err != nil {
-		t.Fatalf("Failed to shorten URL: %v", err)
-	}
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		req = withChiParam(req, "code", "test")
+		w := httptest.NewRecorder()
 
-	// Create a request
-	req := httptest.NewRequest("GET", "/test", nil)
+		h.redirectHandler(w, req)
+
+		resp := w.Result()
+		if resp.StatusCode != http.StatusFound {
+			t.Errorf("Expected %d, got %d", http.StatusFound, resp.StatusCode)
+		}
+		if resp.Header.Get("Location") != "https://example.com" {
+			t.Errorf("Expected redirect to 'https://example.com', got '%s'", resp.Header.Get("Location"))
+		}
+	})
+
+	t.Run("NonExistentCode", func(t *testing.T) {
+		h, _ := setupTestHandler(t)
+
+		req := httptest.NewRequest(http.MethodGet, "/missing", nil)
+		req = withChiParam(req, "code", "missing")
+		w := httptest.NewRecorder()
+
+		h.redirectHandler(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Errorf("Expected %d, got %d", http.StatusNotFound, w.Code)
+		}
+	})
+
+	t.Run("ServiceError", func(t *testing.T) {
+		h, svc := setupTestHandler(t)
+		svc.getErr = errors.New("db error")
+
+		req := httptest.NewRequest(http.MethodGet, "/x", nil)
+		req = withChiParam(req, "code", "x")
+		w := httptest.NewRecorder()
+
+		h.redirectHandler(w, req)
+
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("Expected %d, got %d", http.StatusInternalServerError, w.Code)
+		}
+	})
+}
+
+func TestQRCodeHandler(t *testing.T) {
+	h, _ := setupTestHandler(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/qr/test", nil)
+	req = withChiParam(req, "code", "test")
 	w := httptest.NewRecorder()
 
-	// Set up the chi context
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("code", "test")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	h.qrCodeHandler(w, req)
 
-	// Call the handler
-	handler.redirectHandler(w, req)
-
-	// Check the response
-	resp := w.Result()
-	if resp.StatusCode != http.StatusFound {
-		t.Errorf("Expected status code %d, got %d", http.StatusFound, resp.StatusCode)
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected %d, got %d", http.StatusOK, w.Code)
 	}
-	if resp.Header.Get("Location") != url.LongURL {
-		t.Errorf("Expected redirect to '%s', got '%s'", url.LongURL, resp.Header.Get("Location"))
+	if ct := w.Header().Get("Content-Type"); ct != "image/png" {
+		t.Errorf("Expected Content-Type 'image/png', got '%s'", ct)
 	}
 }
 
 func TestAPIHandlers(t *testing.T) {
-	handler, _ := setupTestHandler(t)
-
-	// Test API shorten URL
 	t.Run("APIShortenURL", func(t *testing.T) {
-		// Create a JSON request
-		reqBody := `{"url": "https://example.com", "custom_code": "api-test"}`
-		req := httptest.NewRequest("POST", "/api/shorten", strings.NewReader(reqBody))
+		h, _ := setupTestHandler(t)
+
+		body := `{"url": "https://example.com", "custom_code": "api-test"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		// Call the handler
-		handler.apiShortenURLHandler(w, req)
+		h.apiShortenURLHandler(w, req)
 
-		// Check the response
-		resp := w.Result()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Expected status code %d, got %d", http.StatusOK, resp.StatusCode)
+		if w.Code != http.StatusOK {
+			t.Errorf("Expected %d, got %d", http.StatusOK, w.Code)
 		}
-
-		// Parse the response
-		var response map[string]any
-		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-			t.Fatalf("Failed to parse response: %v", err)
+		var resp map[string]any
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("Failed to decode response: %v", err)
 		}
-		if response["short_code"] != "api-test" {
-			t.Errorf("Expected short code 'api-test', got '%v'", response["short_code"])
+		if resp["short_code"] != "api-test" {
+			t.Errorf("Expected short_code 'api-test', got '%v'", resp["short_code"])
 		}
-		if response["long_url"] != "https://example.com" {
-			t.Errorf("Expected long URL 'https://example.com', got '%v'", response["long_url"])
+		if resp["long_url"] != "https://example.com" {
+			t.Errorf("Expected long_url 'https://example.com', got '%v'", resp["long_url"])
 		}
 	})
 
-	// Test API list URLs
+	t.Run("APIShortenURL_MissingURL", func(t *testing.T) {
+		h, _ := setupTestHandler(t)
+
+		req := httptest.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		h.apiShortenURLHandler(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("Expected %d, got %d", http.StatusBadRequest, w.Code)
+		}
+	})
+
+	t.Run("APIShortenURL_DuplicateCode", func(t *testing.T) {
+		h, svc := setupTestHandler(t)
+		svc.ShortenURL("https://example.com", "taken")
+
+		body := `{"url": "https://other.com", "custom_code": "taken"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		h.apiShortenURLHandler(w, req)
+
+		if w.Code != http.StatusConflict {
+			t.Errorf("Expected %d, got %d", http.StatusConflict, w.Code)
+		}
+	})
+
 	t.Run("APIListURLs", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/api/urls", nil)
+		h, _ := setupTestHandler(t)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/urls", nil)
 		w := httptest.NewRecorder()
 
-		// Call the handler
-		handler.apiListURLsHandler(w, req)
+		h.apiListURLsHandler(w, req)
 
-		// Check the response
-		resp := w.Result()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Expected status code %d, got %d", http.StatusOK, resp.StatusCode)
+		if w.Code != http.StatusOK {
+			t.Errorf("Expected %d, got %d", http.StatusOK, w.Code)
 		}
 	})
 
-	// Test API get URL
-	t.Run("APIGetURL", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/api/url/api-test", nil)
+	t.Run("APIListURLs_ServiceError", func(t *testing.T) {
+		h, svc := setupTestHandler(t)
+		svc.listErr = errors.New("db down")
+
+		req := httptest.NewRequest(http.MethodGet, "/api/urls", nil)
 		w := httptest.NewRecorder()
 
-		// Set up the chi context
-		rctx := chi.NewRouteContext()
-		rctx.URLParams.Add("code", "api-test")
-		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		h.apiListURLsHandler(w, req)
 
-		// Call the handler
-		handler.apiGetURLHandler(w, req)
-
-		// Check the response
-		resp := w.Result()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Expected status code %d, got %d", http.StatusOK, resp.StatusCode)
-		}
-
-		// Parse the response
-		var response map[string]any
-		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-			t.Fatalf("Failed to parse response: %v", err)
-		}
-		if response["short_code"] != "api-test" {
-			t.Errorf("Expected short code 'api-test', got '%v'", response["short_code"])
-		}
-		if response["long_url"] != "https://example.com" {
-			t.Errorf("Expected long URL 'https://example.com', got '%v'", response["long_url"])
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("Expected %d, got %d", http.StatusInternalServerError, w.Code)
 		}
 	})
 
-	// Test API delete URL
+	t.Run("APIGetURL_Found", func(t *testing.T) {
+		h, svc := setupTestHandler(t)
+		svc.ShortenURL("https://example.com", "api-test")
+
+		req := httptest.NewRequest(http.MethodGet, "/api/url/api-test", nil)
+		req = withChiParam(req, "code", "api-test")
+		w := httptest.NewRecorder()
+
+		h.apiGetURLHandler(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("Expected %d, got %d", http.StatusOK, w.Code)
+		}
+		var resp map[string]any
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("Failed to decode response: %v", err)
+		}
+		if resp["short_code"] != "api-test" {
+			t.Errorf("Expected short_code 'api-test', got '%v'", resp["short_code"])
+		}
+	})
+
+	t.Run("APIGetURL_NotFound", func(t *testing.T) {
+		h, _ := setupTestHandler(t)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/url/missing", nil)
+		req = withChiParam(req, "code", "missing")
+		w := httptest.NewRecorder()
+
+		h.apiGetURLHandler(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Errorf("Expected %d, got %d", http.StatusNotFound, w.Code)
+		}
+	})
+
 	t.Run("APIDeleteURL", func(t *testing.T) {
-		req := httptest.NewRequest("DELETE", "/api/url/api-test", nil)
+		h, svc := setupTestHandler(t)
+		svc.ShortenURL("https://example.com", "api-test")
+
+		req := httptest.NewRequest(http.MethodDelete, "/api/url/api-test", nil)
+		req = withChiParam(req, "code", "api-test")
 		w := httptest.NewRecorder()
 
-		// Set up the chi context
-		rctx := chi.NewRouteContext()
-		rctx.URLParams.Add("code", "api-test")
-		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		h.apiDeleteURLHandler(w, req)
 
-		// Call the handler
-		handler.apiDeleteURLHandler(w, req)
-
-		// Check the response
-		resp := w.Result()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Expected status code %d, got %d", http.StatusOK, resp.StatusCode)
+		if w.Code != http.StatusOK {
+			t.Errorf("Expected %d, got %d", http.StatusOK, w.Code)
 		}
 	})
+
+	t.Run("APIDeleteURL_ServiceError", func(t *testing.T) {
+		h, svc := setupTestHandler(t)
+		svc.deleteErr = errors.New("db error")
+
+		req := httptest.NewRequest(http.MethodDelete, "/api/url/x", nil)
+		req = withChiParam(req, "code", "x")
+		w := httptest.NewRecorder()
+
+		h.apiDeleteURLHandler(w, req)
+
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("Expected %d, got %d", http.StatusInternalServerError, w.Code)
+		}
+	})
+
+	t.Run("APIShortenURL_InvalidBody", func(t *testing.T) {
+		h, _ := setupTestHandler(t)
+
+		req := httptest.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader("not-json"))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		h.apiShortenURLHandler(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("Expected %d, got %d", http.StatusBadRequest, w.Code)
+		}
+	})
+}
+
+func TestClassifyServiceError(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+	}{
+		{"InvalidURL", &model.ErrInvalidURL{URL: "bad"}, http.StatusBadRequest},
+		{"InvalidCode", &model.ErrInvalidCode{Code: "x", Reason: "reserved"}, http.StatusBadRequest},
+		{"CodeInUse", &model.ErrCustomCodeAlreadyExists{Code: "taken"}, http.StatusConflict},
+		{"UnknownError", errors.New("some db error"), http.StatusInternalServerError},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			status, _ := classifyServiceError(tc.err)
+			if status != tc.wantStatus {
+				t.Errorf("Expected %d, got %d", tc.wantStatus, status)
+			}
+		})
+	}
 }

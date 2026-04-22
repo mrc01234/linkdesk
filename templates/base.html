@@ -20,7 +20,9 @@
     </header>
     
     <main class="container">
-        {{ if .urls }}
+        {{ if .error }}
+            {{ template "error-content" . }}
+        {{ else if .urls }}
             {{ template "list" . }}
         {{ else if .url }}
             {{ template "result" . }}

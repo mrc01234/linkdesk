@@ -138,10 +138,10 @@ func TestIncrementClicks(t *testing.T) {
 		t.Errorf("Expected clicks to be 2, got %d", retrievedURL.Clicks)
 	}
 
-	// Increment clicks for non-existent URL
+	// Increment clicks for non-existent URL should return an error
 	err = db.IncrementClicks("nonexistent")
 	if err == nil {
-		t.Logf("Expected error when incrementing clicks for non-existent URL, got nil")
+		t.Errorf("Expected error when incrementing clicks for non-existent URL, got nil")
 	}
 }
 

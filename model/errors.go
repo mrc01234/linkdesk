@@ -32,6 +32,17 @@ func (e *ErrInvalidURL) Error() string {
 	return fmt.Sprintf("invalid URL: %s", e.URL)
 }
 
+// ErrInvalidCode is returned when a custom short code is invalid
+type ErrInvalidCode struct {
+	Code   string
+	Reason string
+}
+
+// Error returns the error message
+func (e *ErrInvalidCode) Error() string {
+	return fmt.Sprintf("invalid short code '%s': %s", e.Code, e.Reason)
+}
+
 // ErrDatabaseError is returned when a database error occurs
 type ErrDatabaseError struct {
 	Err error

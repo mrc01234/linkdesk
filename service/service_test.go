@@ -111,6 +111,43 @@ func TestShortenURL(t *testing.T) {
 	if err == nil {
 		t.Errorf("Expected error for duplicate custom code, got nil")
 	}
+
+	// Test URL auto-prefix
+	url, err = service.ShortenURL("example.com", "noproto")
+	if err != nil {
+		t.Fatalf("Expected auto-prefix to succeed: %v", err)
+	}
+	if url.LongURL != "https://example.com" {
+		t.Errorf("Expected 'https://example.com', got '%s'", url.LongURL)
+	}
+
+	// Test invalid URL
+	_, err = service.ShortenURL("not a url !!!", "")
+	if err == nil {
+		t.Errorf("Expected error for invalid URL, got nil")
+	}
+
+	// Test reserved custom code
+	_, err = service.ShortenURL("https://example.com", "api")
+	if err == nil {
+		t.Errorf("Expected error for reserved code 'api', got nil")
+	}
+
+	// Test custom code with invalid characters
+	_, err = service.ShortenURL("https://example.com", "bad code!")
+	if err == nil {
+		t.Errorf("Expected error for custom code with spaces/special chars, got nil")
+	}
+
+	// Test custom code exceeding max length
+	longCode := make([]byte, 51)
+	for i := range longCode {
+		longCode[i] = 'a'
+	}
+	_, err = service.ShortenURL("https://example.com", string(longCode))
+	if err == nil {
+		t.Errorf("Expected error for custom code exceeding max length, got nil")
+	}
 }
 
 func TestGetURL(t *testing.T) {

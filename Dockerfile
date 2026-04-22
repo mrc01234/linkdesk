@@ -17,5 +17,9 @@ EXPOSE 8080
 ENV PORT=8080
 ENV DB_PATH=/data/data.db
 ENV BASE_URL=http://localhost:8080
+ENV AUTH_USERNAME=""
+ENV AUTH_PASSWORD=""
 VOLUME ["/data"]
-CMD ./url-shortener --port ${PORT} --db ${DB_PATH} --base-url ${BASE_URL} 
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget -qO- http://localhost:${PORT}/ > /dev/null || exit 1
+CMD ./url-shortener --port ${PORT} --db ${DB_PATH} --base-url ${BASE_URL} --username "${AUTH_USERNAME}" --password "${AUTH_PASSWORD}"

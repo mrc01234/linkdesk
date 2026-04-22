@@ -7,8 +7,17 @@ import (
 
 	"github.com/mstgnz/self-hosted-url-shortener/database"
 	"github.com/mstgnz/self-hosted-url-shortener/model"
+	"github.com/mstgnz/self-hosted-url-shortener/pkg/util"
 	"github.com/skip2/go-qrcode"
 )
+
+const shortCodeLength = 6
+const maxCustomCodeLength = 50
+
+var reservedCodes = map[string]struct{}{
+	"api": {}, "static": {}, "urls": {}, "shorten": {},
+	"qr": {}, "delete": {}, "favicon.ico": {},
+}
 
 // URLService handles the business logic for URL shortening
 type URLService struct {
@@ -22,31 +31,35 @@ func New(db database.DatabaseInterface) *URLService {
 
 // ShortenURL creates a shortened URL
 func (s *URLService) ShortenURL(longURL, customCode string) (*model.URL, error) {
-	// Validate the URL
 	if !strings.HasPrefix(longURL, "http://") && !strings.HasPrefix(longURL, "https://") {
 		longURL = "https://" + longURL
 	}
 
+	if !util.IsValidURL(longURL) {
+		return nil, &model.ErrInvalidURL{URL: longURL}
+	}
+
 	var shortCode string
 	if customCode != "" {
-		// Check if the custom code is already in use
+		if err := validateCustomCode(customCode); err != nil {
+			return nil, err
+		}
+
 		existingURL, err := s.db.GetURLByShortCode(customCode)
 		if err != nil {
 			return nil, fmt.Errorf("error checking custom code: %w", err)
 		}
 		if existingURL != nil {
-			return nil, fmt.Errorf("custom code '%s' is already in use", customCode)
+			return nil, &model.ErrCustomCodeAlreadyExists{Code: customCode}
 		}
 		shortCode = customCode
 	} else {
-		// Generate a random short code
 		var err error
-		shortCode, err = generateShortCode(6)
+		shortCode, err = generateShortCode(shortCodeLength)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate short code: %w", err)
 		}
 
-		// Ensure the generated code is unique
 		for {
 			existingURL, err := s.db.GetURLByShortCode(shortCode)
 			if err != nil {
@@ -55,14 +68,13 @@ func (s *URLService) ShortenURL(longURL, customCode string) (*model.URL, error) 
 			if existingURL == nil {
 				break
 			}
-			shortCode, err = generateShortCode(6)
+			shortCode, err = generateShortCode(shortCodeLength)
 			if err != nil {
 				return nil, fmt.Errorf("failed to generate short code: %w", err)
 			}
 		}
 	}
 
-	// Create and save the URL
 	url := model.NewURL(shortCode, longURL)
 	if err := s.db.SaveURL(url); err != nil {
 		return nil, fmt.Errorf("failed to save URL: %w", err)
@@ -102,6 +114,31 @@ func (s *URLService) GenerateQRCode(shortURL string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to generate QR code: %w", err)
 	}
 	return qr, nil
+}
+
+// validateCustomCode checks that a custom code is safe to use
+func validateCustomCode(code string) error {
+	if len(code) > maxCustomCodeLength {
+		return &model.ErrInvalidCode{
+			Code:   code,
+			Reason: fmt.Sprintf("exceeds maximum length of %d characters", maxCustomCodeLength),
+		}
+	}
+	for _, r := range code {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return &model.ErrInvalidCode{
+				Code:   code,
+				Reason: fmt.Sprintf("contains invalid character '%c': only letters, digits, hyphens and underscores are allowed", r),
+			}
+		}
+	}
+	if _, reserved := reservedCodes[strings.ToLower(code)]; reserved {
+		return &model.ErrInvalidCode{
+			Code:   code,
+			Reason: "this path is reserved",
+		}
+	}
+	return nil
 }
 
 // generateShortCode generates a random short code of the specified length

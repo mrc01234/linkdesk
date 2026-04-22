@@ -10,6 +10,9 @@ services:
       - PORT=8080
       - DB_PATH=/data/data.db
       - BASE_URL=http://localhost:8080
+      # Strongly recommended when exposed to the internet:
+      # - AUTH_USERNAME=admin
+      # - AUTH_PASSWORD=changeme
     volumes:
       - url-shortener-data:/data
     restart: unless-stopped

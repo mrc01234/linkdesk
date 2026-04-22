@@ -3,7 +3,6 @@ package database
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -118,9 +117,17 @@ func (d *Database) IncrementClicks(shortCode string) error {
 	WHERE short_code = ?
 	`
 
-	_, err := d.db.Exec(query, shortCode)
+	result, err := d.db.Exec(query, shortCode)
 	if err != nil {
 		return fmt.Errorf("failed to increment clicks: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rows == 0 {
+		return &model.ErrURLNotFound{Code: shortCode}
 	}
 
 	return nil
@@ -151,8 +158,7 @@ func (d *Database) ListURLs() ([]*model.URL, error) {
 			&url.Clicks,
 		)
 		if err != nil {
-			log.Printf("Error scanning URL row: %v", err)
-			continue
+			return nil, fmt.Errorf("failed to scan URL row: %w", err)
 		}
 		urls = append(urls, &url)
 	}

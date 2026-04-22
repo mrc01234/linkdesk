@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -16,35 +19,33 @@ import (
 )
 
 var (
-	// Command line flags
-	port         = flag.Int("port", 8080, "HTTP server port")
+	port         = flag.String("port", "8080", "HTTP server port")
 	dbPath       = flag.String("db", "data.db", "SQLite database path")
 	baseURL      = flag.String("base-url", "http://localhost:8080", "Base URL for shortened URLs")
 	cliMode      = flag.Bool("cli", false, "Run in CLI mode")
 	templatesDir = flag.String("templates", "templates", "Templates directory")
+	username     = flag.String("username", "", "Username for HTTP Basic Auth (requires --password)")
+	password     = flag.String("password", "", "Password for HTTP Basic Auth (requires --username)")
 )
 
 func main() {
-	// Parse command line flags
 	flag.Parse()
 
-	// Create database connection
+	if (*username == "") != (*password == "") {
+		log.Fatal("--username and --password must both be provided together")
+	}
+
 	db, err := database.New(*dbPath)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
 
-	// Create URL service
 	urlService := service.New(db)
 
-	// Check if running in CLI mode
 	if *cliMode {
-		// Create CLI handler
 		cliHandler := handler.NewCLIHandler(urlService, *baseURL)
 		rootCmd := cliHandler.SetupCommands()
-
-		// Execute CLI command
 		if err := rootCmd.Execute(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -52,26 +53,20 @@ func main() {
 		return
 	}
 
-	// Create HTTP handler
 	httpHandler, err := handler.NewHTTPHandler(urlService, *baseURL, *templatesDir)
 	if err != nil {
 		log.Fatalf("Failed to create HTTP handler: %v", err)
 	}
 
-	// Create Chi router
 	router := chi.NewRouter()
-
-	// Add middleware
 	router.Use(middleware.Logger)
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.RequestID)
 	router.Use(middleware.RealIP)
 
-	// Setup routes
-	httpHandler.SetupRoutes(router)
+	httpHandler.SetupRoutes(router, *username, *password)
 
-	// Start HTTP server
-	addr := fmt.Sprintf(":%d", *port)
+	addr := fmt.Sprintf(":%s", *port)
 	server := &http.Server{
 		Addr:         addr,
 		Handler:      router,
@@ -79,9 +74,29 @@ func main() {
 		WriteTimeout: 10 * time.Second,
 	}
 
-	log.Printf("Starting server on %s", addr)
-	log.Printf("URL shortener available at %s", *baseURL)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Failed to start server: %v", err)
+	go func() {
+		log.Printf("Starting server on %s", addr)
+		log.Printf("URL shortener available at %s", *baseURL)
+		if *username != "" {
+			log.Printf("HTTP Basic Auth enabled")
+		} else {
+			log.Printf("WARNING: HTTP Basic Auth is disabled. Set --username and --password to protect the admin interface.")
+		}
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Println("Shutting down server...")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
 	}
+	log.Println("Server stopped")
 }
