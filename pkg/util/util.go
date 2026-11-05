@@ -19,7 +19,7 @@ func IsValidURL(rawURL string) bool {
 	}
 
 	// Check if URL has a host
-	return u.Host != ""
+	return (u.Scheme == "http" || u.Scheme == "https") && u.Hostname() != "" && u.User == nil
 }
 
 // FormatTime formats a time.Time value for display

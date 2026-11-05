@@ -1,44 +1,40 @@
-{{ define "list" }}
-<section class="url-list">
-    <h2>My Shortened URLs</h2>
-    
-    {{ if not .urls }}
-    <div class="empty-state">
-        <p>You haven't shortened any URLs yet.</p>
-        <a href="/" class="btn">Shorten a URL</a>
-    </div>
-    {{ else }}
-    <div class="url-table-container">
-        <table class="url-table">
-            <thead>
-                <tr>
-                    <th>Short URL</th>
-                    <th>Original URL</th>
-                    <th>Created</th>
-                    <th>Clicks</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                {{ range .urls }}
-                <tr>
-                    <td>
-                        <a href="{{ $.baseURL }}/{{ .ShortCode }}" target="_blank">{{ $.baseURL }}/{{ .ShortCode }}</a>
-                    </td>
-                    <td class="long-url">
-                        <span title="{{ .LongURL }}">{{ .LongURL }}</span>
-                    </td>
-                    <td>{{ .CreatedAt.Format "Jan 02, 2006" }}</td>
-                    <td>{{ .Clicks }}</td>
-                    <td class="actions">
-                        <a href="/qr/{{ .ShortCode }}" target="_blank" class="btn btn-small" title="View QR Code">QR</a>
-                        <a href="/delete/{{ .ShortCode }}" class="btn btn-small btn-danger" title="Delete" onclick="return confirm('Are you sure you want to delete this URL?')">Delete</a>
-                    </td>
-                </tr>
-                {{ end }}
-            </tbody>
-        </table>
-    </div>
-    {{ end }}
-</section>
-{{ end }} 
+{{define "list"}}
+<section class="page-heading"><div><p class="eyebrow">LINK LIBRARY</p><h1>链接管理</h1><p class="muted">查找、查看状态，整理每一次分享。</p></div><a class="btn" href="/">＋ 创建链接</a></section>
+<section class="card library">
+<form class="filters" action="/urls" method="get">
+<div class="search-field"><label class="sr-only" for="q">搜索链接</label><input type="search" name="q" id="q" value="{{.query}}" maxlength="200" placeholder="搜索短码或目标网址"></div>
+<div><label class="sr-only" for="status">链接状态</label><select name="status" id="status">
+<option value="all" {{if eq .status "all"}}selected{{end}}>全部状态</option>
+<option value="active" {{if eq .status "active"}}selected{{end}}>有效链接</option>
+<option value="expired" {{if eq .status "expired"}}selected{{end}}>已到期</option>
+</select></div>
+<div><label class="sr-only" for="page_size">每页条数</label><select name="page_size" id="page_size">
+<option value="{{.page.PageSize}}" selected>每页 {{.page.PageSize}} 条</option>
+{{if ne .page.PageSize 10}}<option value="10">每页 10 条</option>{{end}}
+{{if ne .page.PageSize 25}}<option value="25">每页 25 条</option>{{end}}
+{{if ne .page.PageSize 50}}<option value="50">每页 50 条</option>{{end}}
+</select></div><button class="btn btn-secondary" type="submit">筛选</button><a class="text-link reset" href="/urls">重置</a>
+</form>
+<div class="list-summary"><strong>{{.page.Total}}</strong> 条匹配链接<span>按创建时间倒序</span></div>
+{{if .urls}}
+<div class="table-scroll"><table><thead><tr><th>链接</th><th>状态 / 到期时间</th><th>访问次数</th><th>创建时间</th><th>操作</th></tr></thead><tbody>
+{{range .urls}}
+<tr><td class="link-cell"><a class="short-code" href="{{$.baseURL}}/{{.ShortCode}}" target="_blank" rel="noopener noreferrer">/{{.ShortCode}} ↗</a>
+<a class="target-url" href="{{.LongURL}}" title="{{.LongURL}}" target="_blank" rel="noopener noreferrer">{{.LongURL}}</a></td>
+<td>{{if expired .}}<span class="badge expired">已到期</span>{{else}}<span class="badge active">有效</span>{{end}}
+<span class="cell-sub">{{if .ExpiresAt}}{{formatTime .ExpiresAt}}{{else}}长期有效{{end}}</span></td>
+<td class="numeric">{{.Clicks}}</td><td class="date">{{formatTime .CreatedAt}}</td>
+<td><div class="row-actions"><button class="btn-small" type="button" data-copy="{{$.baseURL}}/{{.ShortCode}}">复制</button>
+<a class="btn-small" href="/qr/{{.ShortCode}}" target="_blank" rel="noopener">二维码</a>
+<form action="/delete/{{.ShortCode}}" method="post" data-confirm="删除后，这个短链接将无法访问。确认删除？"><button class="btn-small danger" type="submit">删除</button></form></div></td></tr>
+{{end}}
+</tbody></table></div>
+{{else}}
+<div class="empty-state"><div class="empty-icon">↗</div><h2>{{if .page.Total}}这一页没有链接{{else}}没有匹配的链接{{end}}</h2><p>试试其他关键词，或创建你的第一个短链接。</p><a class="text-link" href="/">创建链接 →</a></div>
+{{end}}
+<div class="pagination"><span>第 {{.page.Page}} 页 · 共 {{.page.TotalPages}} 页</span><div>
+{{if .prev}}<a class="btn-small" href="{{.prev}}">← 上一页</a>{{else}}<span class="btn-small disabled">← 上一页</span>{{end}}
+{{if .next}}<a class="btn-small" href="{{.next}}">下一页 →</a>{{else}}<span class="btn-small disabled">下一页 →</span>{{end}}
+</div></div>
+</section><p class="hint below-card">时间统一显示为 UTC。访问次数记录短链接跳转请求，包含刷新和机器人访问，不代表独立访客。</p>
+{{end}}

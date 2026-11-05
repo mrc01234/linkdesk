@@ -1,47 +1,23 @@
-{{ define "content" }}
-<section class="hero">
-    <h2>Shorten Your URLs</h2>
-    <p>Create short, easy-to-share links with our URL shortener.</p>
-</section>
-
-<section class="url-form">
-    <form action="/shorten" method="POST">
-        <div class="form-group">
-            <label for="url">Enter a long URL:</label>
-            <input type="url" id="url" name="url" placeholder="https://example.com/very/long/url/that/needs/shortening" required>
-        </div>
-        
-        <div class="form-group">
-            <label for="custom_code">Custom short code (optional):</label>
-            <input type="text" id="custom_code" name="custom_code" placeholder="e.g., my-link">
-        </div>
-        
-        <button type="submit" class="btn">Shorten URL</button>
-    </form>
-</section>
-
-<section class="features">
-    <h3>Features</h3>
-    <div class="feature-grid">
-        <div class="feature">
-            <h4>Custom URLs</h4>
-            <p>Create memorable, branded short links with custom URLs.</p>
-        </div>
-        
-        <div class="feature">
-            <h4>QR Codes</h4>
-            <p>Generate QR codes for your shortened URLs for easy mobile sharing.</p>
-        </div>
-        
-        <div class="feature">
-            <h4>Click Tracking</h4>
-            <p>Track how many times your shortened URLs have been clicked.</p>
-        </div>
-        
-        <div class="feature">
-            <h4>Self-Hosted</h4>
-            <p>All your data stays on your server, giving you complete control.</p>
-        </div>
-    </div>
-</section>
-{{ end }} 
+{{define "content"}}
+<section class="intro"><p class="eyebrow">YOUR LINKS, IN ONE PLACE</p><h1>长链接，短一点。<br><span>管理，再清楚一点。</span></h1>
+<p class="lead">为资料、活动和临时分享创建专属入口。设置有效期，在一个工作台里查找和管理。</p></section>
+<div class="create-layout">
+<section class="card"><div class="section-heading"><span class="step">01</span><h2>创建一个短链接</h2></div>
+<form action="/shorten" method="post">
+<label for="url">目标网址 <span class="required">*</span></label>
+<input type="url" id="url" name="url" placeholder="https://example.com/your-long-link" maxlength="4096" required autocomplete="url">
+<p class="hint">支持 http 和 https 地址。</p>
+<div class="form-grid"><div><label for="custom_code">自定义短码 <span class="muted">可选</span></label>
+<input id="custom_code" name="custom_code" placeholder="例如 summer-guide" maxlength="50" pattern="[A-Za-z0-9_-]+">
+<p class="hint">字母、数字、连字符或下划线；留空自动生成。</p></div>
+<div><label for="ttl_hours">有效期</label><select id="ttl_hours" name="ttl_hours">
+<option value="0">长期有效</option><option value="1">1 小时</option><option value="24">24 小时</option><option value="168">7 天</option><option value="720">30 天</option>
+</select><p class="hint">到期后停止跳转，记录仍保留在工作台。</p></div></div>
+<button class="btn" type="submit">创建短链接 <span aria-hidden="true">↗</span></button>
+</form></section>
+<aside class="side-note"><span class="eyebrow">少一点散落，多一点秩序</span><h2>从分享开始，<br>到管理结束。</h2>
+<div class="note-item"><b>01 / 快速找到</b><p>搜索目标地址或短码，按状态筛选。</p></div>
+<div class="note-item"><b>02 / 控制有效期</b><p>临时分享按时失效，长期资料持续可用。</p></div>
+<div class="note-item"><b>03 / 留在自己手中</b><p>数据保存到本地，可自托管与备份。</p></div>
+<a class="text-link" href="/urls">打开链接管理 →</a></aside></div>
+{{end}}

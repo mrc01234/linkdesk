@@ -1,11 +1,12 @@
 package service
 
 import (
+	"context"
 	"os"
 	"testing"
 
-	"github.com/mstgnz/self-hosted-url-shortener/database"
-	"github.com/mstgnz/self-hosted-url-shortener/model"
+	"linkdesk/database"
+	"linkdesk/model"
 )
 
 // MockDatabase implements the database interface for testing
@@ -56,6 +57,11 @@ func (m *MockDatabase) ListURLs() ([]*model.URL, error) {
 		urls = append(urls, url)
 	}
 	return urls, nil
+}
+
+func (m *MockDatabase) SearchURLs(ctx context.Context, opt model.ListOptions) (*model.URLPage, error) {
+	urls, err := m.ListURLs()
+	return &model.URLPage{URLs: urls, Total: len(urls), Page: opt.Page, PageSize: opt.PageSize}, err
 }
 
 // DeleteURL deletes a URL from the mock database

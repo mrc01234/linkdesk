@@ -5,8 +5,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/mstgnz/self-hosted-url-shortener/service"
 	"github.com/spf13/cobra"
+	"linkdesk/service"
 )
 
 // CLIHandler handles CLI commands
@@ -26,9 +26,9 @@ func NewCLIHandler(urlService *service.URLService, baseURL string) *CLIHandler {
 // SetupCommands sets up the CLI commands
 func (h *CLIHandler) SetupCommands() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:   "url-shortener",
-		Short: "A self-hosted URL shortener",
-		Long:  "A self-hosted URL shortener with SQLite backend",
+		Use:   "linkdesk",
+		Short: "LinkDesk link management CLI",
+		Long:  "LinkDesk: self-hosted link management with SQLite",
 	}
 
 	// Shorten command

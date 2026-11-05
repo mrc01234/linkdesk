@@ -1,22 +1,18 @@
 services:
-  url-shortener:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: url-shortener
+  linkdesk:
+    build: .
     ports:
-      - "8080:8080"
+      - "127.0.0.1:${PORT:-8080}:8080"
     environment:
-      - PORT=8080
-      - DB_PATH=/data/data.db
-      - BASE_URL=http://localhost:8080
-      # Strongly recommended when exposed to the internet:
-      # - AUTH_USERNAME=admin
-      # - AUTH_PASSWORD=changeme
+      HOST: "0.0.0.0"
+      PORT: "8080"
+      DB_PATH: /data/linkdesk.db
+      BASE_URL: ${BASE_URL:-http://localhost:8080}
+      AUTH_USERNAME: ${AUTH_USERNAME:?Set AUTH_USERNAME in .env}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:?Set AUTH_PASSWORD in .env}
     volumes:
-      - url-shortener-data:/data
+      - linkdesk-data:/data
     restart: unless-stopped
 
 volumes:
-  url-shortener-data:
-    name: url-shortener-data
+  linkdesk-data:

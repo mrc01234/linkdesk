@@ -5,34 +5,50 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/mstgnz/self-hosted-url-shortener/database"
-	"github.com/mstgnz/self-hosted-url-shortener/handler"
-	"github.com/mstgnz/self-hosted-url-shortener/service"
+	"linkdesk/database"
+	"linkdesk/handler"
+	"linkdesk/service"
 )
 
 var (
-	port         = flag.String("port", "8080", "HTTP server port")
-	dbPath       = flag.String("db", "data.db", "SQLite database path")
-	baseURL      = flag.String("base-url", "http://localhost:8080", "Base URL for shortened URLs")
+	port         = flag.String("port", env("PORT", "8080"), "HTTP server port")
+	host         = flag.String("host", env("HOST", "127.0.0.1"), "HTTP listen host")
+	dbPath       = flag.String("db", env("DB_PATH", "data/linkdesk.db"), "SQLite database path")
+	baseURL      = flag.String("base-url", env("BASE_URL", "http://localhost:8080"), "Base URL for shortened URLs")
 	cliMode      = flag.Bool("cli", false, "Run in CLI mode")
 	templatesDir = flag.String("templates", "templates", "Templates directory")
-	username     = flag.String("username", "", "Username for HTTP Basic Auth (requires --password)")
-	password     = flag.String("password", "", "Password for HTTP Basic Auth (requires --username)")
+	username     = flag.String("username", env("AUTH_USERNAME", ""), "Username for HTTP Basic Auth")
+	password     = flag.String("password", env("AUTH_PASSWORD", ""), "Password for HTTP Basic Auth; prefer environment variable")
 )
+
+func env(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
 
 func main() {
 	flag.Parse()
 
 	if (*username == "") != (*password == "") {
 		log.Fatal("--username and --password must both be provided together")
+	}
+	if !*cliMode && *host != "localhost" && *host != "127.0.0.1" && *host != "::1" && *username == "" {
+		log.Fatal("Non-loopback listening requires AUTH_USERNAME and AUTH_PASSWORD")
+	}
+	if err := os.MkdirAll(filepath.Dir(*dbPath), 0750); err != nil {
+		log.Fatal(err)
 	}
 
 	db, err := database.New(*dbPath)
@@ -46,6 +62,7 @@ func main() {
 	if *cliMode {
 		cliHandler := handler.NewCLIHandler(urlService, *baseURL)
 		rootCmd := cliHandler.SetupCommands()
+		rootCmd.SetArgs(flag.Args())
 		if err := rootCmd.Execute(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -59,19 +76,18 @@ func main() {
 	}
 
 	router := chi.NewRouter()
-	router.Use(middleware.Logger)
-	router.Use(middleware.Recoverer)
 	router.Use(middleware.RequestID)
-	router.Use(middleware.RealIP)
 
 	httpHandler.SetupRoutes(router, *username, *password)
 
-	addr := fmt.Sprintf(":%s", *port)
+	addr := net.JoinHostPort(*host, *port)
 	server := &http.Server{
-		Addr:         addr,
-		Handler:      router,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		Addr:              addr,
+		Handler:           router,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {

@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/mstgnz/self-hosted-url-shortener/model"
-	"github.com/mstgnz/self-hosted-url-shortener/service"
+	"linkdesk/model"
+	"linkdesk/service"
 )
 
 // MockURLService is a mock implementation of the URL service for testing
@@ -34,7 +34,7 @@ func NewMockURLService() *MockURLService {
 	}
 }
 
-func (m *MockURLService) ShortenURL(longURL, customCode string) (*model.URL, error) {
+func (m *MockURLService) ShortenURL(longURL, customCode string, expiry ...*time.Time) (*model.URL, error) {
 	shortCode := customCode
 	if shortCode == "" {
 		shortCode = "generated"
@@ -52,6 +52,9 @@ func (m *MockURLService) ShortenURL(longURL, customCode string) (*model.URL, err
 		Clicks:    0,
 	}
 	m.id++
+	if len(expiry) > 0 {
+		u.ExpiresAt = expiry[0]
+	}
 	m.urls[shortCode] = u
 	return u, nil
 }
@@ -85,6 +88,14 @@ func (m *MockURLService) ListURLs() ([]*model.URL, error) {
 		urls = append(urls, u)
 	}
 	return urls, nil
+}
+
+func (m *MockURLService) SearchURLs(ctx context.Context, opt model.ListOptions) (*model.URLPage, error) {
+	urls, err := m.ListURLs()
+	if err != nil {
+		return nil, err
+	}
+	return &model.URLPage{URLs: urls, Total: len(urls), Page: opt.Page, PageSize: opt.PageSize}, nil
 }
 
 func (m *MockURLService) DeleteURL(shortCode string) error {
@@ -199,8 +210,8 @@ func TestShortenURLHandler(t *testing.T) {
 
 		h.shortenURLHandler(w, req)
 
-		if w.Code != http.StatusOK {
-			t.Errorf("Expected %d, got %d", http.StatusOK, w.Code)
+		if w.Code != http.StatusSeeOther {
+			t.Errorf("Expected %d, got %d", http.StatusSeeOther, w.Code)
 		}
 	})
 

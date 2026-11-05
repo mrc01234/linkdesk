@@ -1,48 +1,9 @@
-{{ define "result" }}
-<section class="result">
-    <h2>URL Shortened Successfully!</h2>
-    
-    <div class="result-card">
-        <div class="result-item">
-            <h3>Your Short URL:</h3>
-            <div class="short-url-container">
-                <input type="text" id="shortUrl" value="{{ .shortURL }}" readonly>
-                <button class="btn copy-btn" onclick="copyToClipboard()">Copy</button>
-            </div>
-        </div>
-        
-        <div class="result-item">
-            <h3>Original URL:</h3>
-            <p class="long-url">{{ .url.LongURL }}</p>
-        </div>
-        
-        <div class="result-item">
-            <h3>QR Code:</h3>
-            <div class="qr-code">
-                <img src="/qr/{{ .url.ShortCode }}" alt="QR Code">
-                <a href="/qr/{{ .url.ShortCode }}" download="qr-{{ .url.ShortCode }}.png" class="btn">Download QR</a>
-            </div>
-        </div>
-    </div>
-    
-    <div class="actions">
-        <a href="/" class="btn">Shorten Another URL</a>
-        <a href="/urls" class="btn btn-secondary">View All URLs</a>
-    </div>
-</section>
-
-<script>
-function copyToClipboard() {
-    var copyText = document.getElementById("shortUrl");
-    copyText.select();
-    copyText.setSelectionRange(0, 99999);
-    document.execCommand("copy");
-    
-    var copyBtn = document.querySelector(".copy-btn");
-    copyBtn.textContent = "Copied!";
-    setTimeout(function() {
-        copyBtn.textContent = "Copy";
-    }, 2000);
-}
-</script>
-{{ end }} 
+{{define "result"}}
+<section class="result-heading"><span class="badge active">创建成功</span><h1>链接已准备好分享。</h1><p class="muted">复制短链接，或下载二维码发送给对方。</p></section>
+<section class="card result-card"><div class="result-detail"><label for="shortUrl">短链接</label>
+<div class="copy-row"><input id="shortUrl" value="{{.shortURL}}" readonly><button class="btn" type="button" data-copy="{{.shortURL}}">复制</button></div>
+<label>目标网址</label><p class="break-word"><a href="{{.url.LongURL}}" target="_blank" rel="noopener noreferrer">{{.url.LongURL}}</a></p>
+<label>有效期</label><p>{{if .url.ExpiresAt}}{{formatTime .url.ExpiresAt}}{{else}}长期有效{{end}}</p>
+<div class="result-actions"><a class="btn btn-secondary" href="/urls">查看链接管理</a><a class="text-link" href="/">继续创建 →</a></div>
+</div><div class="qr-panel"><img src="/qr/{{.url.ShortCode}}" alt="此短链接的二维码" width="192" height="192"><a class="text-link" href="/qr/{{.url.ShortCode}}" download="linkdesk-{{.url.ShortCode}}.png">下载二维码 ↓</a></div></section>
+{{end}}

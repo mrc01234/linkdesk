@@ -1,20 +1,25 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
+	"mime"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/mstgnz/self-hosted-url-shortener/model"
-	"github.com/mstgnz/self-hosted-url-shortener/service"
+	"linkdesk/model"
+	"linkdesk/service"
 )
 
 // Define a custom key type to avoid collisions in context values
@@ -35,8 +40,9 @@ func NewHTTPHandler(urlService service.URLServiceInterface, baseURL string, temp
 	templates := template.New("")
 
 	templates = templates.Funcs(template.FuncMap{
+		"expired": func(u *model.URL) bool { return u.Expired(time.Now()) },
 		"formatTime": func(t time.Time) string {
-			return t.Format("2006-01-02 15:04:05")
+			return t.UTC().Format("2006-01-02 15:04 UTC")
 		},
 		"truncate": func(s string, n int) string {
 			if len(s) <= n {
@@ -65,6 +71,15 @@ func (h *HTTPHandler) SetupRoutes(router chi.Router, username, password string) 
 	router.Use(middleware.Logger)
 	router.Use(middleware.Recoverer)
 	router.Use(h.currentYearMiddleware)
+	router.Use(http.NewCrossOriginProtection().Handler)
+	router.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("Referrer-Policy", "no-referrer")
+			next.ServeHTTP(w, r)
+		})
+	})
+	router.Get("/healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, map[string]string{"status": "ok"}) })
 
 	// Always public: static assets, favicon, and the redirect itself
 	fileServer := http.FileServer(http.Dir("./static"))
@@ -76,15 +91,23 @@ func (h *HTTPHandler) SetupRoutes(router chi.Router, username, password string) 
 
 	// Management routes, optionally protected
 	router.Group(func(r chi.Router) {
+		r.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Cache-Control", "no-store")
+				r.Body = http.MaxBytesReader(w, r.Body, 16384)
+				next.ServeHTTP(w, r)
+			})
+		})
 		if username != "" && password != "" {
 			r.Use(basicAuthMiddleware(username, password))
 		}
 
 		r.Get("/", h.indexHandler)
 		r.Get("/urls", h.listURLsHandler)
+		r.Get("/manage/{code}", h.resultHandler)
 		r.Post("/shorten", h.shortenURLHandler)
 		r.Get("/qr/{code}", h.qrCodeHandler)
-		r.Get("/delete/{code}", h.deleteURLHandler)
+		r.Post("/delete/{code}", h.deleteURLHandler)
 
 		r.Route("/api", func(r chi.Router) {
 			r.Post("/shorten", h.apiShortenURLHandler)
@@ -100,7 +123,7 @@ func basicAuthMiddleware(username, password string) func(http.Handler) http.Hand
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			u, p, ok := r.BasicAuth()
-			if !ok || u != username || p != password {
+			if !ok || subtle.ConstantTimeCompare([]byte(u), []byte(username)) != 1 || subtle.ConstantTimeCompare([]byte(p), []byte(password)) != 1 {
 				w.Header().Set("WWW-Authenticate", `Basic realm="URL Shortener"`)
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
@@ -121,12 +144,23 @@ func (h *HTTPHandler) currentYearMiddleware(next http.Handler) http.Handler {
 
 // renderError writes an error page with the given status code and message
 func (h *HTTPHandler) renderError(w http.ResponseWriter, r *http.Request, statusCode int, msg string) {
-	w.WriteHeader(statusCode)
-	if err := h.templates.ExecuteTemplate(w, "base.html", map[string]any{
+	h.render(w, statusCode, map[string]any{
 		"error":       msg,
 		"currentYear": r.Context().Value(currentYearKey),
-	}); err != nil {
-		log.Printf("failed to execute error template: %v", err)
+	})
+}
+
+func (h *HTTPHandler) render(w http.ResponseWriter, status int, data map[string]any) {
+	var body bytes.Buffer
+	if err := h.templates.ExecuteTemplate(&body, "base.html", data); err != nil {
+		log.Printf("render template: %v", err)
+		http.Error(w, "Failed to render page", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if _, err := body.WriteTo(w); err != nil {
+		log.Printf("write page: %v", err)
 	}
 }
 
@@ -142,19 +176,34 @@ func (h *HTTPHandler) indexHandler(w http.ResponseWriter, r *http.Request) {
 
 // listURLsHandler handles the URL listing page
 func (h *HTTPHandler) listURLsHandler(w http.ResponseWriter, r *http.Request) {
-	urls, err := h.urlService.ListURLs()
+	opt, err := parseListOptions(r)
 	if err != nil {
+		h.renderError(w, r, 400, err.Error())
+		return
+	}
+	page, err := h.urlService.SearchURLs(r.Context(), opt)
+	if err != nil {
+		var invalid *model.ErrInvalidInput
+		if errors.As(err, &invalid) {
+			h.renderError(w, r, 400, err.Error())
+			return
+		}
 		h.renderError(w, r, http.StatusInternalServerError, "Failed to load URLs")
 		return
 	}
-
-	if err = h.templates.ExecuteTemplate(w, "base.html", map[string]any{
-		"urls":        urls,
+	prev, next := "", ""
+	if opt.Page > 1 {
+		prev = pageLink(opt, opt.Page-1)
+	}
+	if opt.Page < page.TotalPages {
+		next = pageLink(opt, opt.Page+1)
+	}
+	h.render(w, http.StatusOK, map[string]any{
+		"isList": true, "urls": page.URLs, "page": page,
+		"query": opt.Query, "status": opt.Status, "prev": prev, "next": next,
 		"baseURL":     h.baseURL,
 		"currentYear": r.Context().Value(currentYearKey),
-	}); err != nil {
-		http.Error(w, fmt.Sprintf("Error rendering template: %v", err), http.StatusInternalServerError)
-	}
+	})
 }
 
 // shortenURLHandler handles URL shortening requests
@@ -166,29 +215,44 @@ func (h *HTTPHandler) shortenURLHandler(w http.ResponseWriter, r *http.Request) 
 
 	longURL := r.PostForm.Get("url")
 	customCode := r.PostForm.Get("custom_code")
+	var expiry *time.Time
+	if raw := r.PostForm.Get("ttl_hours"); raw != "" && raw != "0" {
+		hours, err := strconv.Atoi(raw)
+		if err != nil || hours < 1 || hours > 8760 {
+			h.renderError(w, r, 400, "有效期须为 1～8760 小时")
+			return
+		}
+		t := time.Now().UTC().Add(time.Duration(hours) * time.Hour)
+		expiry = &t
+	}
 
 	if longURL == "" {
 		h.renderError(w, r, http.StatusBadRequest, "URL is required")
 		return
 	}
 
-	url, err := h.urlService.ShortenURL(longURL, customCode)
+	url, err := h.urlService.ShortenURL(longURL, customCode, expiry)
 	if err != nil {
 		statusCode, msg := classifyServiceError(err)
 		h.renderError(w, r, statusCode, msg)
 		return
 	}
 
-	shortURL := fmt.Sprintf("%s/%s", h.baseURL, url.ShortCode)
+	// Refreshing the result page must not repeat the INSERT.
+	http.Redirect(w, r, "/manage/"+url.ShortCode, http.StatusSeeOther)
+}
 
-	if err = h.templates.ExecuteTemplate(w, "base.html", map[string]any{
-		"url":         url,
-		"shortURL":    shortURL,
-		"baseURL":     h.baseURL,
-		"currentYear": r.Context().Value(currentYearKey),
-	}); err != nil {
-		http.Error(w, fmt.Sprintf("Error rendering template: %v", err), http.StatusInternalServerError)
+func (h *HTTPHandler) resultHandler(w http.ResponseWriter, r *http.Request) {
+	u, err := h.urlService.GetURL(chi.URLParam(r, "code"))
+	if err != nil {
+		h.renderError(w, r, 500, "Failed to load link")
+		return
 	}
+	if u == nil {
+		h.renderError(w, r, 404, "链接不存在或已删除。")
+		return
+	}
+	h.render(w, 200, map[string]any{"url": u, "shortURL": h.baseURL + "/" + u.ShortCode, "baseURL": h.baseURL, "currentYear": r.Context().Value(currentYearKey)})
 }
 
 // qrCodeHandler generates a QR code for a URL
@@ -235,14 +299,15 @@ func (h *HTTPHandler) redirectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go func() {
-		if err := h.urlService.RecordClick(code); err != nil {
-			var errNotFound *model.ErrURLNotFound
-			if !errors.As(err, &errNotFound) {
-				log.Printf("failed to record click for %s: %v", code, err)
-			}
-		}
-	}()
+	w.Header().Set("Cache-Control", "no-store")
+	if url.Expired(time.Now()) {
+		h.renderError(w, r, http.StatusGone, "链接已到期，请向分享者申请新的链接。")
+		return
+	}
+	// Synchronous update makes counts observable immediately and avoids unbounded goroutines.
+	if err := h.urlService.RecordClick(code); err != nil {
+		log.Printf("record click for %s: %v", code, err)
+	}
 
 	http.Redirect(w, r, url.LongURL, http.StatusFound)
 }
@@ -252,12 +317,23 @@ func (h *HTTPHandler) redirectHandler(w http.ResponseWriter, r *http.Request) {
 // apiShortenURLHandler handles API URL shortening requests
 func (h *HTTPHandler) apiShortenURLHandler(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		URL        string `json:"url"`
-		CustomCode string `json:"custom_code"`
+		URL        string     `json:"url"`
+		CustomCode string     `json:"custom_code"`
+		ExpiresAt  *time.Time `json:"expires_at"`
 	}
-
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		http.Error(w, "Content-Type must be application/json", 415)
+		return
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		http.Error(w, "Expected one JSON object", 400)
 		return
 	}
 
@@ -266,7 +342,7 @@ func (h *HTTPHandler) apiShortenURLHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	url, err := h.urlService.ShortenURL(request.URL, request.CustomCode)
+	url, err := h.urlService.ShortenURL(request.URL, request.CustomCode, request.ExpiresAt)
 	if err != nil {
 		statusCode, msg := classifyServiceError(err)
 		http.Error(w, msg, statusCode)
@@ -283,19 +359,30 @@ func (h *HTTPHandler) apiShortenURLHandler(w http.ResponseWriter, r *http.Reques
 		"short_url":  shortURL,
 		"created_at": url.CreatedAt.Format(time.RFC3339),
 		"clicks":     url.Clicks,
+		"expires_at": url.ExpiresAt,
 	})
 }
 
 // apiListURLsHandler handles API URL listing requests
 func (h *HTTPHandler) apiListURLsHandler(w http.ResponseWriter, r *http.Request) {
-	urls, err := h.urlService.ListURLs()
+	opt, err := parseListOptions(r)
 	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	page, err := h.urlService.SearchURLs(r.Context(), opt)
+	if err != nil {
+		var invalid *model.ErrInvalidInput
+		if errors.As(err, &invalid) {
+			http.Error(w, err.Error(), 400)
+			return
+		}
 		http.Error(w, "Failed to list URLs", http.StatusInternalServerError)
 		return
 	}
 
-	var response []map[string]any
-	for _, url := range urls {
+	response := make([]map[string]any, 0, len(page.URLs))
+	for _, url := range page.URLs {
 		shortURL := fmt.Sprintf("%s/%s", h.baseURL, url.ShortCode)
 		response = append(response, map[string]any{
 			"id":         url.ID,
@@ -304,11 +391,13 @@ func (h *HTTPHandler) apiListURLsHandler(w http.ResponseWriter, r *http.Request)
 			"short_url":  shortURL,
 			"created_at": url.CreatedAt.Format(time.RFC3339),
 			"clicks":     url.Clicks,
+			"expires_at": url.ExpiresAt,
+			"expired":    url.Expired(time.Now()),
 		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"urls": response})
+	writeJSON(w, map[string]any{"urls": response, "total": page.Total, "page": page.Page, "page_size": page.PageSize, "total_pages": page.TotalPages})
 }
 
 // apiGetURLHandler handles API URL retrieval requests
@@ -336,6 +425,8 @@ func (h *HTTPHandler) apiGetURLHandler(w http.ResponseWriter, r *http.Request) {
 		"short_url":  shortURL,
 		"created_at": url.CreatedAt.Format(time.RFC3339),
 		"clicks":     url.Clicks,
+		"expires_at": url.ExpiresAt,
+		"expired":    url.Expired(time.Now()),
 	})
 }
 
@@ -357,9 +448,10 @@ func classifyServiceError(err error) (int, string) {
 	var errInvalid *model.ErrInvalidURL
 	var errInvalidCode *model.ErrInvalidCode
 	var errCodeInUse *model.ErrCustomCodeAlreadyExists
+	var errInput *model.ErrInvalidInput
 
 	switch {
-	case errors.As(err, &errInvalid), errors.As(err, &errInvalidCode):
+	case errors.As(err, &errInvalid), errors.As(err, &errInvalidCode), errors.As(err, &errInput):
 		return http.StatusBadRequest, err.Error()
 	case errors.As(err, &errCodeInUse):
 		return http.StatusConflict, err.Error()

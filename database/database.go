@@ -1,6 +1,9 @@
 package database
 
-import "github.com/mstgnz/self-hosted-url-shortener/model"
+import (
+	"context"
+	"linkdesk/model"
+)
 
 // DatabaseInterface defines the interface for database operations
 type DatabaseInterface interface {
@@ -15,6 +18,7 @@ type DatabaseInterface interface {
 
 	// ListURLs returns all URLs in the database
 	ListURLs() ([]*model.URL, error)
+	SearchURLs(context.Context, model.ListOptions) (*model.URLPage, error)
 
 	// DeleteURL deletes a URL from the database
 	DeleteURL(shortCode string) error

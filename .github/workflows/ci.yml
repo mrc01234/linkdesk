@@ -1,0 +1,41 @@
+name: verify
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache: true
+      - name: Formatting
+        run: test -z "$(gofmt -l cmd database handler model pkg service)"
+      - name: Test with race detector
+        run: go test -race -count=1 ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Build
+        run: go build -trimpath -o dist/linkdesk ./cmd
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and smoke test authenticated container
+        shell: bash
+        run: |
+          docker build -t linkdesk:ci .
+          test_password=$(openssl rand -hex 24)
+          docker run -d --name linkdesk-ci -p 127.0.0.1:8080:8080 -e AUTH_USERNAME=ci -e AUTH_PASSWORD="$test_password" linkdesk:ci
+          trap 'docker logs linkdesk-ci; docker rm -f linkdesk-ci' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/healthz; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8080/healthz
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/urls)" = 401
+          curl -fsS -u "ci:$test_password" http://127.0.0.1:8080/api/urls

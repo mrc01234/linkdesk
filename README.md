@@ -1,231 +1,187 @@
-# Self-Hosted URL Shortener
+# LinkDesk · 链接工作台
 
-A simple, self-hosted URL shortener built with Go and SQLite. Create short, easy-to-share links with a clean web interface, REST API, and CLI.
+一个面向个人和小团队的自托管链接管理工具：创建短链接、设置有效期、搜索与分页管理、查看访问次数和下载二维码。
 
-## Features
+基于 [mstgnz/self-hosted-url-shortener](https://github.com/mstgnz/self-hosted-url-shortener) 二次开发，保留原作者 MIT 许可与 Git 历史。新增功能及来源边界见 [UPSTREAM.md](UPSTREAM.md)。本轮实现使用 AI 辅助，适合作为能够运行、解释和继续修改的个人学习项目，不表示从零独立开发。
 
-- Web interface to create, manage, and track shortened URLs
-- Custom short codes for memorable links
-- QR code generation for any short link
-- Click tracking per URL
-- REST API for programmatic access
-- CLI for scripting and automation
-- All data stored locally in SQLite, no external services required
-- Single binary, easy to deploy
+## 功能
 
-## Security
+- Web / REST API 创建链接，支持自定义短码与二维码。
+- 按短码或目标网址搜索；按全部、有效、已到期筛选。
+- SQL 层分页、总数与稳定倒序；空列表返回 `[]`。
+- 可选到期时间；到期返回 HTTP 410，不跳转、不累加访问次数。
+- SQLite 文件持久化，自动兼容上游不含到期字段的数据库。
+- Basic Auth 保护管理入口，公开短链跳转和存活检查。
+- 删除使用 POST / DELETE；阻止跨站浏览器写请求。
+- 中文响应式管理页面、复制链接和二维码下载。
 
-> **Read this before exposing the application to the internet.**
+## 快速启动
 
-This application has **no authentication by default**. Without authentication, anyone who can reach the server can create, view, and delete all URLs.
+### 从源码启动
 
-### Safe to run without authentication
+需要 Go **1.25+**（建议当前受支持版本）以及 GCC。SQLite 驱动需要 CGO。
 
-- `localhost` only
-- Private or home network with no public exposure
-- Behind a VPN restricted to trusted users
-
-### Must enable authentication
-
-- Any deployment with a public IP or public domain name
-
-### Enabling HTTP Basic Auth
-
-Pass `--username` and `--password` at startup. Both flags must be provided together.
+在项目根目录：
 
 ```bash
-./url-shortener \
-  --base-url "https://your-domain.com" \
-  --username admin \
-  --password your-secret-password
+go mod download
+go run ./cmd
 ```
 
-Short link redirects (`/{code}`) are always public so that anyone clicking a link is redirected without being prompted for a password. Only the management pages, admin API, and QR endpoints are protected.
+打开 **http://localhost:8080**。默认仅监听 `127.0.0.1`，首次启动会创建 `data/linkdesk.db`，无需安装 MySQL，也不会使用你的 `golong_study` 数据库。
 
-### Docker with authentication
+Windows 若 GCC 不在 PATH，可指定编译器后运行：
 
-Edit `docker-compose.yml` and uncomment the auth lines:
-
-```yaml
-services:
-  url-shortener:
-    build: .
-    ports:
-      - "8080:8080"
-    environment:
-      - PORT=8080
-      - DB_PATH=/data/data.db
-      - BASE_URL=https://your-domain.com
-      - AUTH_USERNAME=admin
-      - AUTH_PASSWORD=your-secret-password
-    volumes:
-      - url-shortener-data:/data
-    restart: unless-stopped
+```powershell
+$env:CC = '你的 GCC 目录\bin\gcc.exe'
+$env:CGO_ENABLED = '1'
+go run ./cmd
 ```
 
-### HTTPS
+也提供 `scripts/dev.ps1`，支持 run / test / build，并能识别本学习工作区已安装的便携 GCC：
 
-HTTP Basic Auth transmits credentials in base64. **Always put the application behind a reverse proxy with TLS in production.**
-
-Caddy (automatic HTTPS):
-
+```powershell
+.\scripts\dev.ps1 -Mode run -Port 8082
 ```
-your-domain.com {
-    reverse_proxy localhost:8080
+
+如果执行策略阻止脚本，可使用前面的 Go 命令，不必修改全局执行策略。
+
+### Docker Compose
+
+```bash
+cp .env.example .env
+# 编辑 .env，填写 AUTH_PASSWORD，按需修改端口和 BASE_URL
+docker compose up --build -d
+docker compose logs -f
+```
+
+Windows 复制命令为 `Copy-Item .env.example .env`。原生 Go 不自动读取 `.env`，该文件供 Compose 使用。
+
+Compose 将端口绑定到本机，要求配置管理账号和密码，数据保存在命名卷。停止服务：
+
+```bash
+docker compose down
+```
+
+不要为普通重启添加 `-v`，它会删除数据卷。Docker 构建和鉴权冒烟测试已写入 CI；本机是否实际验证见 [验证记录](docs/verification.md)。
+
+## 演示流程
+
+1. 在首页创建一个自定义短码，例如 `go-guide`，有效期选 1 小时。
+2. 打开“链接管理”，搜索 `guide`，切换状态和每页条数。
+3. 点击短链接，返回列表后查看访问次数。
+4. 创建更多链接，查看分页；搜索不存在的词，查看空状态。
+5. 重启服务，确认链接保留。到期失效、空结果、旧库迁移等边界由集成测试覆盖。
+6. 删除不再需要的测试链接。
+
+访问次数统计的是跳转请求，可能包含机器人和刷新，不等于独立用户数。
+
+## API
+
+本机未启用鉴权时可以直接调用。启用后使用 HTTP Basic Auth，例如 curl 的 `-u 用户名` 会提示输入密码。
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| POST | `/api/shorten` | 创建短链接 |
+| GET | `/api/urls?q=&status=all&page=1&page_size=10` | 搜索分页 |
+| GET | `/api/url/{code}` | 查看元数据，包含过期状态 |
+| DELETE | `/api/url/{code}` | 删除，重复删除也返回成功 |
+| GET | `/{code}` | 公开跳转；不存在 404，到期 410 |
+| GET | `/qr/{code}` | 下载二维码，管理鉴权保护 |
+| GET | `/healthz` | 公开存活检查，不代表全面数据库健康检查 |
+
+创建：
+
+```http
+POST /api/shorten
+Content-Type: application/json
+
+{
+  "url": "https://go.dev/doc/",
+  "custom_code": "go-docs",
+  "expires_at": null
 }
 ```
 
-nginx:
+`expires_at` 可省略、为 null，或传带时区的 RFC3339 时间（必须晚于当前时间）；以秒为精度保存。成功返回 200，包含 id、short_code、long_url、short_url、created_at、clicks 和 expires_at。输入错误 400，短码冲突 409，不支持的媒体类型 415；错误响应为纯文本，服务端故障不向客户端暴露数据库细节。
 
-```nginx
-server {
-    listen 443 ssl;
-    server_name your-domain.com;
-    ssl_certificate     /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
+PowerShell 示例：
 
-    location / {
-        proxy_pass http://localhost:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
+```powershell
+$body = @{
+    url = 'https://go.dev/doc/'
+    custom_code = 'go-docs'
+    expires_at = (Get-Date).ToUniversalTime().AddHours(1).ToString('o')
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri 'http://localhost:8080/api/shorten' -Method Post -ContentType 'application/json' -Body $body
+Invoke-RestMethod -Uri 'http://localhost:8080/api/urls?q=go&page=1&page_size=10'
 ```
 
-## Installation
-
-### Download binary
-
-Download the latest release from the [releases page](https://github.com/mstgnz/self-hosted-url-shortener/releases).
-
-### Build from source
-
-Requires Go 1.24+ and GCC (for the SQLite driver).
-
-```bash
-git clone https://github.com/mstgnz/self-hosted-url-shortener.git
-cd self-hosted-url-shortener
-go build -o url-shortener ./cmd
-```
-
-### Docker
-
-```bash
-docker compose up -d
-```
-
-## Usage
-
-### Web interface
-
-```bash
-./url-shortener --port 8080 --base-url "https://your-domain.com"
-```
-
-Open `http://localhost:8080` in your browser.
-
-### REST API
-
-When Basic Auth is enabled, include credentials with every request (`-u username:password`).
-
-#### Shorten a URL
-
-```bash
-curl -X POST http://localhost:8080/api/shorten \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://example.com/very/long/url", "custom_code": "my-link"}'
-```
-
-Response:
+列表响应：
 
 ```json
 {
-  "id": 1,
-  "short_code": "my-link",
-  "long_url": "https://example.com/very/long/url",
-  "short_url": "http://localhost:8080/my-link",
-  "created_at": "2024-01-01T00:00:00Z",
-  "clicks": 0
+  "urls": [],
+  "total": 0,
+  "page": 1,
+  "page_size": 10,
+  "total_pages": 0
 }
 ```
 
-Error responses:
+- `page`：1～1,000,000；`page_size`：1～100，默认 10。
+- `q`：去掉两端空白，最多 200 字节；对短码和原地址做字面子串搜索。百分号和下划线没有通配含义；ASCII 大小写不敏感，未实现完整 Unicode 大小写折叠。
+- `status`：all / active / expired。
+- 固定按 `created_at DESC, id DESC` 排序；同一次列表查询的总数与条目使用同一读事务。
+- 页码超过末页时返回空数组，不自动跳回第一页。
+- API 管理响应禁止缓存；短链 302 也禁止缓存，以便后续到期或删除生效。
+- 相比上游，`/api/urls` 默认只返回第一页，并增加分页元数据，这是有意的行为变更。
 
-| Status | Meaning |
-|--------|---------|
-| `400 Bad Request` | Missing or invalid URL, invalid custom code format |
-| `409 Conflict` | Custom code is already in use |
-| `500 Internal Server Error` | Unexpected server error |
+## 配置与部署边界
 
-#### List all URLs
+| Flag | 环境变量 | 默认 |
+| --- | --- | --- |
+| --host | HOST | 127.0.0.1 |
+| --port | PORT | 8080 |
+| --db | DB_PATH | data/linkdesk.db |
+| --base-url | BASE_URL | http://localhost:8080 |
+| --username | AUTH_USERNAME | 空 |
+| --password | AUTH_PASSWORD | 空 |
+| --templates | — | templates |
 
-```bash
-curl http://localhost:8080/api/urls
-```
+命令行覆盖环境变量。更改端口或域名时一起更改 BASE_URL；从项目根目录启动，以找到 templates 和 static。
 
-#### Get URL details
+公开部署需要配置管理账号密码，并在反向代理处启用 HTTPS。应用拒绝在无管理账号密码时绑定非回环地址。Basic Auth 沿用上游设计，属于单管理员管理方式；没有注册、租户隔离、密码找回或开放注册服务的防滥用体系。
 
-```bash
-curl http://localhost:8080/api/url/my-link
-```
+请勿直接开放成匿名短链平台。搜索为子串扫描，大页码使用 OFFSET；当前目标是小规模单实例，未声称高并发或百万数据性能。SQLite 文件应放在本地磁盘；备份前先停止应用，再复制数据库及仍存在的 WAL/SHM 伴随文件。不要在运行中只复制主 db 文件当作可靠备份。
 
-#### Delete a URL
-
-```bash
-curl -X DELETE http://localhost:8080/api/url/my-link
-```
-
-### CLI
-
-```bash
-# Shorten
-./url-shortener --cli shorten https://example.com/very/long/url
-./url-shortener --cli shorten https://example.com/very/long/url --code my-link
-
-# List
-./url-shortener --cli list
-
-# Get
-./url-shortener --cli get my-link
-
-# Generate QR code
-./url-shortener --cli qr my-link --output qr.png
-
-# Delete
-./url-shortener --cli delete my-link
-```
-
-## Configuration
-
-| Flag | Env variable | Default | Description |
-|------|-------------|---------|-------------|
-| `--port` | `PORT` | `8080` | HTTP server port |
-| `--db` | `DB_PATH` | `data.db` | SQLite database path |
-| `--base-url` | `BASE_URL` | `http://localhost:8080` | Base URL used in generated short links |
-| `--templates` | | `templates` | Templates directory |
-| `--username` | `AUTH_USERNAME` | | Username for HTTP Basic Auth |
-| `--password` | `AUTH_PASSWORD` | | Password for HTTP Basic Auth |
-| `--cli` | | | Run in CLI mode instead of starting the server |
-
-### Custom short code rules
-
-- Only letters, digits, hyphens (`-`), and underscores (`_`)
-- Maximum 50 characters
-- The following paths are reserved and cannot be used: `api`, `static`, `urls`, `shorten`, `qr`, `delete`, `favicon.ico`
-
-## Development
+## 开发与测试
 
 ```bash
-# Run
-go run ./cmd
-
-# Test
-go test ./...
-
-# Build
-go build -o url-shortener ./cmd
+go test -race -count=1 ./...
+go vet ./...
+go build -trimpath -o dist/linkdesk ./cmd
 ```
 
-## License
+Windows 构建输出名改为 `dist/linkdesk.exe`。测试使用临时 SQLite 数据库，不改演示数据。
 
-MIT, see [LICENSE](LICENSE).
+```text
+cmd/          启动、配置、HTTP 生命周期
+handler/      HTTP / CLI、输入校验、响应和模板
+service/      URL 校验、短码与有效期规则
+database/     SQLite、兼容迁移、分页查询
+model/        链接、分页与错误类型
+templates/    中文服务端渲染页面
+static/       CSS 与复制交互
+docs/         架构、验证、发布与简历说明
+```
+
+- [架构与面试讲解](docs/architecture.md)
+- [验证记录与限制](docs/verification.md)
+- [发布到 GitHub](docs/publishing.md)
+- [项目经历表述与补学清单](docs/portfolio.md)
+
+## 许可
+
+MIT。原作者版权声明完整保留，见 [LICENSE](LICENSE)。

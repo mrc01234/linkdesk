@@ -1,11 +1,15 @@
 package service
 
-import "github.com/mstgnz/self-hosted-url-shortener/model"
+import (
+	"context"
+	"linkdesk/model"
+	"time"
+)
 
 // URLServiceInterface defines the interface for URL service operations
 type URLServiceInterface interface {
 	// ShortenURL creates a shortened URL
-	ShortenURL(longURL, customCode string) (*model.URL, error)
+	ShortenURL(longURL, customCode string, expiresAt ...*time.Time) (*model.URL, error)
 
 	// GetURL retrieves a URL by its short code
 	GetURL(shortCode string) (*model.URL, error)
@@ -15,6 +19,7 @@ type URLServiceInterface interface {
 
 	// ListURLs returns all URLs
 	ListURLs() ([]*model.URL, error)
+	SearchURLs(context.Context, model.ListOptions) (*model.URLPage, error)
 
 	// DeleteURL deletes a URL
 	DeleteURL(shortCode string) error

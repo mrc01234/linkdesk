@@ -1,14 +1,16 @@
 package service
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"strings"
+	"time"
 
-	"github.com/mstgnz/self-hosted-url-shortener/database"
-	"github.com/mstgnz/self-hosted-url-shortener/model"
-	"github.com/mstgnz/self-hosted-url-shortener/pkg/util"
 	"github.com/skip2/go-qrcode"
+	"linkdesk/database"
+	"linkdesk/model"
+	"linkdesk/pkg/util"
 )
 
 const shortCodeLength = 6
@@ -16,7 +18,7 @@ const maxCustomCodeLength = 50
 
 var reservedCodes = map[string]struct{}{
 	"api": {}, "static": {}, "urls": {}, "shorten": {},
-	"qr": {}, "delete": {}, "favicon.ico": {},
+	"qr": {}, "delete": {}, "favicon.ico": {}, "healthz": {}, "manage": {},
 }
 
 // URLService handles the business logic for URL shortening
@@ -30,7 +32,23 @@ func New(db database.DatabaseInterface) *URLService {
 }
 
 // ShortenURL creates a shortened URL
-func (s *URLService) ShortenURL(longURL, customCode string) (*model.URL, error) {
+func (s *URLService) ShortenURL(longURL, customCode string, expiry ...*time.Time) (*model.URL, error) {
+	longURL = strings.TrimSpace(longURL)
+	customCode = strings.TrimSpace(customCode)
+	if longURL == "" || (strings.Contains(longURL, "://") && !strings.HasPrefix(longURL, "http://") && !strings.HasPrefix(longURL, "https://")) {
+		return nil, &model.ErrInvalidURL{URL: longURL}
+	}
+	if len(longURL) > 4096 {
+		return nil, &model.ErrInvalidInput{Message: "URL must not exceed 4096 bytes"}
+	}
+	var expiresAt *time.Time
+	if len(expiry) > 0 && expiry[0] != nil {
+		t := expiry[0].UTC().Truncate(time.Second)
+		if !t.After(time.Now()) {
+			return nil, &model.ErrInvalidInput{Message: "expires_at must be in the future"}
+		}
+		expiresAt = &t
+	}
 	if !strings.HasPrefix(longURL, "http://") && !strings.HasPrefix(longURL, "https://") {
 		longURL = "https://" + longURL
 	}
@@ -76,6 +94,7 @@ func (s *URLService) ShortenURL(longURL, customCode string) (*model.URL, error) 
 	}
 
 	url := model.NewURL(shortCode, longURL)
+	url.ExpiresAt = expiresAt
 	if err := s.db.SaveURL(url); err != nil {
 		return nil, fmt.Errorf("failed to save URL: %w", err)
 	}
@@ -100,6 +119,14 @@ func (s *URLService) RecordClick(shortCode string) error {
 // ListURLs retrieves all URLs
 func (s *URLService) ListURLs() ([]*model.URL, error) {
 	return s.db.ListURLs()
+}
+
+func (s *URLService) SearchURLs(ctx context.Context, opt model.ListOptions) (*model.URLPage, error) {
+	opt.Query = strings.TrimSpace(opt.Query)
+	if len(opt.Query) > 200 {
+		return nil, &model.ErrInvalidInput{Message: "search query must not exceed 200 bytes"}
+	}
+	return s.db.SearchURLs(ctx, opt)
 }
 
 // DeleteURL deletes a URL by its short code

@@ -1,40 +1,18 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>URL Shortener</title>
-    <link rel="stylesheet" href="/static/css/style.css">
-</head>
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LinkDesk · 链接工作台</title><link rel="stylesheet" href="/static/css/style.css"></head>
 <body>
-    <header>
-        <div class="container">
-            <h1>URL Shortener</h1>
-            <nav>
-                <ul>
-                    <li><a href="/">Home</a></li>
-                    <li><a href="/urls">My URLs</a></li>
-                </ul>
-            </nav>
-        </div>
-    </header>
-    
-    <main class="container">
-        {{ if .error }}
-            {{ template "error-content" . }}
-        {{ else if .urls }}
-            {{ template "list" . }}
-        {{ else if .url }}
-            {{ template "result" . }}
-        {{ else }}
-            {{ template "content" . }}
-        {{ end }}
-    </main>
-    
-    <footer>
-        <div class="container">
-            <p>&copy; {{ .currentYear }} Self-Hosted URL Shortener</p>
-        </div>
-    </footer>
-</body>
-</html> 
+<header class="topbar"><div class="container topbar-inner">
+<a class="brand" href="/"><span class="brand-mark">↗</span> LinkDesk <span class="brand-caption">链接工作台</span></a>
+<nav aria-label="主导航"><a href="/">创建链接</a><a href="/urls" {{if .isList}}aria-current="page"{{end}}>链接管理</a></nav>
+</div></header>
+<main class="container">
+{{if .error}}{{template "error-content" .}}
+{{else if .isList}}{{template "list" .}}
+{{else if .url}}{{template "result" .}}
+{{else}}{{template "content" .}}{{end}}
+</main>
+<footer class="container footer"><span>LinkDesk · 自托管链接管理</span><span>Go + SQLite · {{.currentYear}}</span></footer>
+<script src="/static/app.js" defer></script>
+</body></html>

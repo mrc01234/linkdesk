@@ -1,9 +1,1 @@
-{{ define "error-content" }}
-<section class="error">
-    <div class="error-container">
-        <h2>Error</h2>
-        <p>{{ .error }}</p>
-        <a href="/" class="btn">Go Home</a>
-    </div>
-</section>
-{{ end }}
+{{define "error-content"}}<section class="card error-card"><p class="eyebrow">LINKDESK</p><h1>这次没有完成</h1><p role="alert">{{.error}}</p><div class="result-actions"><a class="btn" href="/">返回创建页</a><a class="text-link" href="/urls">查看链接管理 →</a></div></section>{{end}}

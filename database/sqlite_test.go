@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mstgnz/self-hosted-url-shortener/model"
+	"linkdesk/model"
 )
 
 func setupTestDB(t *testing.T) (*Database, func()) {
