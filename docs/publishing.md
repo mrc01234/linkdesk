@@ -1,6 +1,10 @@
 # 发布到自己的 GitHub
 
-这是一个独立工作目录，保留上游历史和许可。完成代码不等于已经上传；当前没有替你创建远程仓库。
+2026-11-06 已发布至公开仓库：**[mrc01234/linkdesk](https://github.com/mrc01234/linkdesk)**，默认分支为 `main`。本地 `portfolio` 分支跟踪 `origin/main`；上游完整历史与 MIT 许可已保留。
+
+后续提交后，在本项目目录运行 `git push origin HEAD:main` 即可更新；先用 `git status` 和 `git diff` 确认本次内容。云端验证见 [Actions](https://github.com/mrc01234/linkdesk/actions)。
+
+以下保留为在其他账号下新建仓库时的流程参考；当前仓库已经创建，不需要重复创建或添加 origin。
 
 ## 1. 创建空仓库
 
