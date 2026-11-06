@@ -4,6 +4,8 @@
 
 基于 [mstgnz/self-hosted-url-shortener](https://github.com/mstgnz/self-hosted-url-shortener) 二次开发，保留原作者 MIT 许可与 Git 历史。新增功能及来源边界见 [UPSTREAM.md](UPSTREAM.md)。本轮实现使用 AI 辅助，适合作为能够运行、解释和继续修改的个人学习项目，不表示从零独立开发。
 
+**验证状态：** Windows 本地测试、竞态检测、实际 HTTP 运行和源码包重测已通过；浏览器视觉与交互仍待检查。Linux / Docker 的验证结果以 [GitHub Actions](https://github.com/mrc01234/linkdesk/actions) 为准，详细记录见 [verification.md](docs/verification.md)。
+
 ## 功能
 
 - Web / REST API 创建链接，支持自定义短码与二维码。
